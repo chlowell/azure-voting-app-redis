@@ -38,8 +38,35 @@ Create a resource group:
     bash-4.3# az group create -l southcentralus -n $RESOURCE_GROUP
 ```
 
+## Creating a Kubernetes cluster with Azure Container Service
+Continuing with the same shell, let's deploy a cluster. The CLI is convenient
+for this because it will handle creating SSH keys and a service principal. The
+deployment will take a few minutes.
+
+```sh
+    bash-4.3# az acs create --orchestrator-type kubernetes -g $RESOURCE_GROUP -n $CLUSTER_NAME --agent-count 1 --generate-ssh-keys
+```
+
+Get credentials for the cluster:
+```sh
+    bash-4.3# az acs kubernetes get-credentials -g $RESOURCE_GROUP -n $CLUSTER_NAME
+```
+This will create `/root/.kube/config`. You'll need it to access the cluster from
+your local machine. Verify the file exists on the local side of the volume mount
+you created with `docker run`. If it doesn't, you can copy it somewhere manually
+with `docker cp` (from a shell on your local machine):
+```sh
+    $ docker ps
+    CONTAINER ID        IMAGE                       ...
+    01864a9daf3e        azuresdk/azure-cli-python   ...
+    $ docker cp 018:/root/.kube/config c:/temp/handson-kubeconf
+```
+If you later want to hack on the cluster's machines directly, you'll need the
+SSH keys `az` generated; they're in the container's `/root/.ssh`.
+
 ## Creating an Azure Container Registry
-This is straightforward with the CLI:
+This is straightforward with either the Azure Portal or the CLI. We're already
+using the CLI, so let's continue with it:
 ```sh
     bash-4.3# az acr create -g $RESOURCE_GROUP -n $ACR_NAME --sku Basic --admin-enabled true
 ```
@@ -57,33 +84,7 @@ You'll need credentials to use the registry:
     bash-4.3# az acr credential show -n $ACR_NAME -o table
 ```
 
-## Creating a Kubernetes cluster with Azure Container Service
-Continuing with the same shell, let's deploy a cluster. This will take a
-few minutes.
-
-```sh
-    bash-4.3# az acs create --orchestrator-type kubernetes -g $RESOURCE_GROUP -n $CLUSTER_NAME --agent-count 1 --generate-ssh-keys
-```
-
-Get credentials for the cluster:
-```sh
-    bash-4.3# az acs kubernetes get-credentials -g $RESOURCE_GROUP -n $CLUSTER_NAME
-```
-This will create `/root/.kube/config`. You'll need it to access the cluster from
-your local machine. Verify the file exists on the local side of the volume mount
-you created with `docker run`. If it doesn't, you can copy it somewhere manually
-with `docker cp` (from a shell on your local machine):
-```sh
-    $ docker ps
-    docker ps
-    CONTAINER ID        IMAGE                       ...
-    01864a9daf3e        azuresdk/azure-cli-python   ...
-    $ docker cp 018:/root/.kube/config c:/temp/handson-kubeconf
-```
-If you later want to hack on the cluster's machines directly, you'll also want
-the SSH keys `az` generated; they're in `/root/.ssh`.
-
-We're done with this container. You can Ctrl-D its shell.
+With that, we're done with this container. You can Ctrl-D its shell.
 
 ## Pushing images to the registry
 With the infrastructure in place, let's prepare the artifacts. The app
@@ -113,9 +114,9 @@ Push the image:
 ## Deploying the app to Kubernetes
 First you must configure `kubectl` for your cluster. The easiest way to do this
 is to define an environment variable, `KUBECONFIG`, with the path to the
-configuration file you created through `az`:
+configuration file from `az acs kubernetes get-credentials`:
 ```powershell
-    $ $env:KUBECONFIG="C:/temp/az/.kube/conf"
+    $ $env:KUBECONFIG="C:/temp/az/.kube/config"
 ```
 
 Verify the configuration:
@@ -126,7 +127,7 @@ Verify the configuration:
     k8s-master-c4b4072e-0   Ready,SchedulingDisabled   18m       v1.6.6
 ```
 
-Create a deployment for a redis pod with `kubectl run`:
+Deploy a redis pod named `backend` with `kubectl run`:
 ```sh
     $ kubectl run backend --image=redis:3.2.11-alpine --port=6379
     deployment "backend" created
@@ -136,25 +137,28 @@ Create a deployment for a redis pod with `kubectl run`:
     $ kubectl get po
     NAME                               READY     STATUS    RESTARTS   AGE
     backend-1732908694-jgfz9           1/1       Running   0          12s
+```
+
+That works, but it's more typical to specify resources in YAML files. Let's
+delete the deployment and make a durable, versionable artifact specifying it:
+```sh
     $ kubectl delete deploy backend
 ```
 
-`kubectl run` tells the Kubernetes API server to create a deployment resource
-with the specified parameters. It's more typical to specify resources in YAML
-files. `kubectl` can output the YAML representation of any resource it creates:
+`kubectl` can output a YAML representation for any resource it creates:
 ```sh
-    $ kubectl run backend --image=redis:3.2.11-alpine --port=6379 -l app=azure-vote --dry-run -o yaml
+    $ kubectl run backend --image=redis:3.2.11-alpine --port=6379 -l app=azure-vote -l tier=backend --dry-run -o yaml
 ```
 
-We can redirect that YAML to a file:
+We can redirect that output to a file:
 ```sh
-    $ kubectl run backend --image=redis:3.2.11-alpine --port=6379 -l app=azure-vote --dry-run -o yaml > deployments.yaml
+    $ kubectl run backend --image=redis:3.2.11-alpine --port=6379 -l app=azure-vote -l tier=backend --dry-run -o yaml > deployments.yaml
 ```
 
-We need a deployment for the app's web frontend as well:
+We need a deployment for the Flask app as well:
 ```sh
     $ printf '---\n' >> deployments.yaml
-    $ kubectl run azure-vote --image=myregistry.azurecr.io/azure-vote:1.0 --port=80 --env='REDIS=backend' -l app=azure-vote --dry-run -o yaml >> deployments.yaml
+    $ kubectl run frontend --image=myregistry.azurecr.io/azure-vote:1.0 --port=80 --env='REDIS=backend' -l app=azure-vote -l tier=frontend --dry-run -o yaml >> deployments.yaml
 ```
 
 Now we can create the deployments from the file:
@@ -163,50 +167,51 @@ Now we can create the deployments from the file:
 ```
 
 That gets Kubernetes deploying the pods we need, but the frontend can't
-communicate with redis, and nobody can reach the frontend. We need to
-expose the pods with **services**. A service is a durable interface to a
-collection of pods. The pods are transient, but the service's name can always
-be used to find them via DNS.
+communicate with redis, and nobody can reach the frontend. We need to expose
+the pods with services. A service is a durable interface to a collection of
+pods. The pods are transient, but the service's name can always be used to
+find them via DNS.
 
 Let's use `kubectl expose` to get YAML describing a service for the backend:
 ```sh
-    $ kubectl expose deploy backend --port=6379 --type=ClusterIP -l app=azure-vote --dry-run -o yaml > services.yaml
+    $ kubectl expose deploy backend --port=6379 --type=ClusterIP -l app=azure-vote  -l tier=backend --dry-run -o yaml > services.yaml
 ```
 
 A service of type `ClusterIP` will only be accessible from within the cluster.
 This is the default, and what we want here because the backend shouldn't be
-exposed to the external network.
+exposed externally.
 
 However, we want the frontend exposed to the internet. For that we need a
 `LoadBalancer` service:
 ```sh
     $ printf '---\n' >> services.yaml
-    $ kubectl expose deploy azure-vote --port=80 --type=LoadBalancer -l app=azure-vote --dry-run -o yaml >> services.yaml
+    $ kubectl expose deploy frontend --port=80 --type=LoadBalancer -l app=azure-vote -l tier=frontend --dry-run -o yaml >> services.yaml
 ```
-Azure will assign a load balancer and public IP for this service.
 
 Now we can create the services:
 ```sh
     $ kubectl create -f services.yaml
 ```
+It may take Azure a few minutes to set up a load balancer with a public IP for
+the `frontend` service.
 
 ## Monitoring the app
-`kubectl` can give provide broad overviews of Kubernetes objects as well as
-deeply detailed descriptions:
+`kubectl` can provide broad overviews of Kubernetes objects as well as deeply
+detailed descriptions of them:
 ```sh
     $ kubectl get deploy,po,svc -l app=azure-vote
     NAME                DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
-    deploy/azure-vote   1         1         1            1           4m
+    deploy/frontend     1         1         1            1           4m
     deploy/backend      1         1         1            1           4m
 
     NAME                             READY     STATUS    RESTARTS   AGE
-    po/azure-vote-3100128220-3j313   1/1       Running   0          4m
+    po/frontend-3100128220-3j313     1/1       Running   0          4m
     po/backend-2290028658-t9ntf      1/1       Running   0          4m
 
     NAME             CLUSTER-IP    EXTERNAL-IP    PORT(S)        AGE
-    svc/azure-vote   10.0.116.96   13.84.159.21   80:30267/TCP   4m
+    svc/frontend     10.0.116.96   13.84.159.21   80:30267/TCP   4m
     svc/backend      10.0.9.168    <none>         6379/TCP       4m
-    $ kubectl describe po/azure-vote-3100128220-3j313
+    $ kubectl describe po/frontend-3100128220-3j313
     ... much detail ...
 ```
 
