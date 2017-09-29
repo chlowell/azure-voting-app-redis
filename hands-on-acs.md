@@ -147,18 +147,18 @@ delete the deployment and make a durable, versionable artifact specifying it:
 
 `kubectl` can output a YAML representation for any resource it creates:
 ```sh
-    $ kubectl run backend --image=redis:3.2.11-alpine --port=6379 -l app=azure-vote -l tier=backend --dry-run -o yaml
+    $ kubectl run backend --image=redis:3.2.11-alpine --port=6379 -l 'app=azure-vote,tier=backend' --dry-run -o yaml
 ```
 
 We can redirect that output to a file:
 ```sh
-    $ kubectl run backend --image=redis:3.2.11-alpine --port=6379 -l app=azure-vote -l tier=backend --dry-run -o yaml > deployments.yaml
+    $ kubectl run backend --image=redis:3.2.11-alpine --port=6379 -l 'app=azure-vote,tier=backend' --dry-run -o yaml > deployments.yaml
 ```
 
 We need a deployment for the Flask app as well:
 ```sh
     $ printf '---\n' >> deployments.yaml
-    $ kubectl run frontend --image=myregistry.azurecr.io/azure-vote:1.0 --port=80 --env='REDIS=backend' -l app=azure-vote -l tier=frontend --dry-run -o yaml >> deployments.yaml
+    $ kubectl run frontend --image=myregistry.azurecr.io/azure-vote:1.0 --port=80 --env='REDIS=backend' -l 'app=azure-vote,tier=frontend' --dry-run -o yaml >> deployments.yaml
 ```
 
 Now we can create the deployments from the file:
@@ -174,7 +174,7 @@ find them via DNS.
 
 Let's use `kubectl expose` to get YAML describing a service for the backend:
 ```sh
-    $ kubectl expose deploy backend --port=6379 --type=ClusterIP -l app=azure-vote  -l tier=backend --dry-run -o yaml > services.yaml
+    $ kubectl expose deploy backend --port=6379 --type=ClusterIP -l 'app=azure-vote,tier=backend' --dry-run -o yaml > services.yaml
 ```
 
 A service of type `ClusterIP` will only be accessible from within the cluster.
@@ -185,7 +185,7 @@ However, we want the frontend exposed to the internet. For that we need a
 `LoadBalancer` service:
 ```sh
     $ printf '---\n' >> services.yaml
-    $ kubectl expose deploy frontend --port=80 --type=LoadBalancer -l app=azure-vote -l tier=frontend --dry-run -o yaml >> services.yaml
+    $ kubectl expose deploy frontend --port=80 --type=LoadBalancer -l 'app=azure-vote,tier=frontend' --dry-run -o yaml >> services.yaml
 ```
 
 Now we can create the services:
